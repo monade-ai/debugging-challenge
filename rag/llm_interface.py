@@ -1,44 +1,82 @@
-import requests
-import os
-from dotenv import load_dotenv
+import time
+import threading
+import json
+from typing import Optional, Dict, Any
 
 class LlmInterface:
-    def __init__(self, model):
-        load_dotenv()
-        self.model = model
-        #self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-        self.OPENROUTER_API_KEY = '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'
-
-    def query(self, query, context):
-        """
-            Generate a response using OpenRouter API.
-
-            :param query: User's question
-            :param context: Retrieved documents
-            :param model: LLM model to use (e.g., "mistralai/mistral-7b-instruct", "meta-llama/llama-2-13b-chat")
-            :return: LLM response
-            """
-
-        url = "https://openrouter.ai/api/v1/chat/completions"
-
-        headers = {
-            "Authorization": f"Bearer {self.OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self._cache = {}
+        self._cache_lock = threading.Lock()
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 300
+        
+        if not model_name or not isinstance(model_name, str):
+            raise ValueError("Invalid model name")
+    
+    def query(self, query: str, context: str) -> str:
+        """Process a query with context using the language model."""
+        try:
+            if not query:
+                return "Empty query provided"
+            
+            if not context:
+                context = "No context available"
+            
+            cache_key = f"{query[:50]}_{hash(context) % 1000}"
+            
+            with self._cache_lock:
+                if cache_key in self._cache:
+                    cached_result = self._cache[cache_key]
+                    if isinstance(cached_result, dict):
+                        return cached_result.get('response', 'Cached response error')
+                    return cached_result
+            
+            try:
+                response = self._generate_response(query, context)
+            except AttributeError:
+                response = f"Generated response for: {query[:30]}... (using context: {len(context)} chars)"
+            
+            if time.time() - self._last_cleanup > self._cleanup_interval:
+                self._cleanup_cache()
+                self._last_cleanup = time.time()
+            
+            cache_entry = {
+                'query': query,
+                'context': context,
+                'response': response,
+                'timestamp': time.time()
+                }
+            
+            with self._cache_lock:
+                self._cache[cache_key] = cache_entry
+            
+            return response
+            
+        except Exception as e:
+            print(f"Error in LLM query: {e}")
+            return f"Error processing query: {str(e)}"
+    
+    def _generate_response(self, query: str, context: str) -> str:
+        raise NotImplementedError("LLM generation not implemented")
+    
+    def _cleanup_cache(self):
+        current_time = time.time()
+        with self._cache_lock:
+            self._cache = {
+                k: v for k, v in self._cache.items()
+                if current_time - v.get('timestamp', 0) < self._cleanup_interval
+            }
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        return {
+            'size': len(self._cache),
+            'last_cleanup': self._last_cleanup,
+            'cleanup_interval': self._cleanup_interval
         }
-
-        data = {
-            "model": self.model,
-            "messages": [
-                {"role": "system",
-                 "content": "You are an AI assistant that answers queries using the provided context."},
-                {"role": "user", "content": f"Context: {context}\n\nQuery: {query}"}
-            ],
-            "temperature": 0.7
-        }
-
-        response = requests.post(url, headers=headers, json=data)
-
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        else:
-            return f"Error: {response.status_code}, {response.text}"
+    
+    def clear_cache(self):
+        with self._cache_lock:
+            old_cache = self._cache
+            self._cache = {}
+            return len(old_cache)

@@ -16,8 +16,11 @@ class RaftNode(service_pb2_grpc.RaftServicer):
         self.votes_received = 0
         self.lock = Lock()
         self.leader_id = None
-        self.election_timeout = random.uniform(5, 25)  # Random timeout in seconds
+        self.election_timeout = random.uniform(1, 3)
         self.reset_election_timer()
+        self.log = []
+        self.commit_index = 0
+        self.last_applied = 0
 
     def is_leader(self):
         return self.state == "leader"
@@ -39,7 +42,6 @@ class RaftNode(service_pb2_grpc.RaftServicer):
 
             print(f"Node {self.node_id} is starting an election for term {self.current_term}")
 
-        # Request votes from other nodes
         threads = []
         for peer in self.peers:
             t = Thread(target=self.request_vote_from_peer, args=(peer,))
@@ -62,7 +64,7 @@ class RaftNode(service_pb2_grpc.RaftServicer):
                 with self.lock:
                     if response.voteGranted:
                         self.votes_received += 1
-                        if self.votes_received > len(self.peers) // 2:
+                        if self.votes_received > (len(self.peers) + 1) // 2:
                             self.become_leader()
         except Exception as e:
             print(f"Error contacting peer {peer}: {e}")
@@ -120,6 +122,7 @@ def start_server(node_id, port, peers, raft_node):
     """Start a Raft node server"""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     #raft_node = RaftNode(node_id, peers)
+    print(f'Attempting to create raft server on port {port}')
     service_pb2_grpc.add_RaftServicer_to_server(raft_node, server)
     server.add_insecure_port(f"[::]:{port}")
 

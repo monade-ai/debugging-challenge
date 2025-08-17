@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 import threading
+import time
 
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,6 +54,8 @@ class Pipeline:
         self.context_engine = ContextFetcher(self.faiss)
         self.raft = raft
         self.is_running = True
+        self._lock = threading.Lock()
+        self._query_history = []
 
     def refresh_rag(self, doc_path):
         if not self.is_running:
@@ -63,11 +66,16 @@ class Pipeline:
         if not self.is_running:
             raise Exception("Pipeline is not running")
 
-        if not self.raft.is_leader():
-            leader = self.raft.is_leader()
+        leader = self.raft.is_leader()
+        if not leader:
             if leader:
                 raise Exception(f"Not the leader. Forward request to {leader}")
             raise Exception("No leader available")
+
+        self._query_history.append({
+            'query': query,
+            'timestamp': time.time()
+        })
 
         context = self.context_engine.retrieve(query=query)
         return self.llm.query(query, context)
@@ -77,6 +85,9 @@ class Pipeline:
 
     def start(self):
         self.is_running = True
+
+    def get_query_history(self):
+        return self._query_history.copy()
 
 
 def cleanup_ports(ports):
@@ -244,6 +255,7 @@ def start_raft_server(node_config: NodeConfig):
             args=(node_config.node_id, node_config.port + 1000, node_config.peers, raft_node),
             daemon=True
         )
+        logger.info(f"Starting thread for raft on node {node_config.node_id}")
         raft_thread.start()
         return raft_node
     except Exception as e:
